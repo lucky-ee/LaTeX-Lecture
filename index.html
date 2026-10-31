@@ -1,0 +1,64 @@
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wispr Lecture</title>
+
+    <!-- KaTeX: renders LaTeX as mathematical notation -->
+    <link rel="stylesheet"
+          href="https://cdn.jsdelivr.net/npm/katex@0.19.1/dist/katex.min.css">
+    <script defer
+            src="https://cdn.jsdelivr.net/npm/katex@0.19.1/dist/katex.min.js"></script>
+</head>
+
+<body>
+    <h1>Wispr Lecture</h1>
+    <p>Dictate your lecture notes below.</p>
+
+    <!-- Notes appear here -->
+    <ul id="notes"></ul>
+
+    <!-- Note input -->
+    <form id="note-form">
+        <input
+            id="note-input"
+            type="text"
+            placeholder="Start speaking or typing..."
+            autocomplete="off"
+        >
+        <button type="submit">Add Note</button>
+    </form>
+
+    <!-- Our math parser -->
+    <script src="readings.js"></script>
+
+    <!-- Temporary note-handling logic -->
+    <script>
+        const form = document.getElementById("note-form");
+        const input = document.getElementById("note-input");
+        const notes = document.getElementById("notes");
+
+        form.addEventListener("submit", function(event) {
+            event.preventDefault();
+
+            const text = input.value.trim();
+
+            if (text === "") {
+                return;
+            }
+
+            const note = document.createElement("li");
+            note.textContent = text;
+
+            notes.appendChild(note);
+
+            input.value = "";
+            input.focus();
+        });
+    </script>
+</body>
+
+</html>
