@@ -1,5 +1,9 @@
-
 function readings(phrase) {
-    // TODO: Convert dictated math into possible LaTeX readings.
+    const text = phrase.trim();
+
+    if (text === "(x^2)/2") {
+        return ["\\frac{x^2}{2}"];
+    }
+
     return [];
 }

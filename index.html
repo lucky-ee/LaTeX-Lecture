@@ -51,7 +51,15 @@
             }
 
             const note = document.createElement("li");
-            note.textContent = text;
+            const matches = readings(text);
+
+            if (matches.length === 1) {
+                katex.render(matches[0], note, {
+                    throwOnError: false
+                });
+            } else {
+                note.textContent = text;
+            }
 
             notes.appendChild(note);
 
