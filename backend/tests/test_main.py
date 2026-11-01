@@ -3,10 +3,34 @@ import os
 import unittest
 from unittest.mock import Mock, patch
 
+import httpx
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from prometheus_client import REGISTRY
 
 from main import NoteRequest, app, interpret, repair_latex
+
+
+def metric(name, **labels):
+    return REGISTRY.get_sample_value(name, labels) or 0.0
+
+
+def llm_metrics():
+    """Snapshot the LLM counters; the registry is global, so tests compare deltas."""
+    snapshot = {
+        outcome: metric("llm_requests_total", outcome=outcome)
+        for outcome in ("success", "timeout", "http_error", "invalid_response")
+    }
+    snapshot["latency_count"] = metric("llm_request_duration_seconds_count")
+    return snapshot
+
+
+def llm_reply(segments):
+    response = Mock()
+    response.json.return_value = {
+        "choices": [{"message": {"content": json.dumps({"segments": segments})}}]
+    }
+    return response
 
 
 class InterpretationTests(unittest.TestCase):
@@ -112,12 +136,68 @@ class InterpretationTests(unittest.TestCase):
             interpret(NoteRequest(text="   "))
         self.assertEqual(caught.exception.status_code, 422)
 
-    def test_metrics_endpoint_exposes_request_and_llm_latency(self):
+    def assert_llm_metrics_changed(self, before, **expected):
+        after = llm_metrics()
+        for key in before:
+            with self.subTest(metric=key):
+                self.assertEqual(after[key] - before[key], expected.get(key, 0))
+
+    def test_metrics_endpoint_records_a_successful_llm_call(self):
         client = TestClient(app)
-        client.post("/api/interpret", json={"text": "(x^2)/2"})
+        reply = llm_reply([{"kind": "text", "content": "Today we study limits.", "readings": []}])
+        before = llm_metrics()
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+            with patch("main.httpx.post", return_value=reply):
+                response = client.post("/api/interpret", json={"text": "Today we study limits."})
+        self.assertEqual(response.status_code, 200)
+        self.assert_llm_metrics_changed(before, success=1, latency_count=1)
+
         body = client.get("/metrics").text
         self.assertIn('http_request_duration_seconds_count{handler="/api/interpret"', body)
-        self.assertIn("llm_request_duration_seconds_bucket", body)
+        self.assertIn('llm_requests_total{outcome="success"}', body)
+        self.assertIn('llm_requests_total{outcome="timeout"}', body)
+        self.assertIn("llm_request_duration_seconds_count", body)
+
+    def test_known_notation_does_not_count_as_an_llm_call(self):
+        before = llm_metrics()
+        with patch.dict(os.environ, {}, clear=True):
+            interpret(NoteRequest(text="(x^2)/2"))
+        self.assert_llm_metrics_changed(before)
+
+    def test_llm_timeout_is_counted_without_latency(self):
+        before = llm_metrics()
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+            with patch("main.httpx.post", side_effect=httpx.ReadTimeout("slow")):
+                with self.assertRaises(HTTPException) as caught:
+                    interpret(NoteRequest(text="Integral from a to b"))
+        self.assertEqual(caught.exception.status_code, 502)
+        self.assert_llm_metrics_changed(before, timeout=1)
+
+    def test_llm_http_error_is_counted_without_latency(self):
+        response = Mock()
+        response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "rate limited",
+            request=httpx.Request("POST", "https://openrouter.ai"),
+            response=httpx.Response(429),
+        )
+        before = llm_metrics()
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+            with patch("main.httpx.post", return_value=response):
+                with self.assertRaises(HTTPException) as caught:
+                    interpret(NoteRequest(text="Integral from a to b"))
+        self.assertEqual(caught.exception.status_code, 502)
+        self.assert_llm_metrics_changed(before, http_error=1)
+
+    def test_invalid_llm_response_is_counted_with_latency(self):
+        response = Mock()
+        response.json.return_value = {"choices": [{"message": {"content": "not json"}}]}
+        before = llm_metrics()
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+            with patch("main.httpx.post", return_value=response):
+                with self.assertRaises(HTTPException):
+                    interpret(NoteRequest(text="Integral from a to b"))
+        # The upstream did answer, so its latency counts even though the content was unusable.
+        self.assert_llm_metrics_changed(before, invalid_response=1, latency_count=1)
 
 
 if __name__ == "__main__":

@@ -1,11 +1,11 @@
 import os
 import re
 import time
-from typing import Literal
+from typing import Literal, NoReturn
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from prometheus_client import Histogram
+from prometheus_client import Counter, Histogram
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -14,6 +14,22 @@ LLM_LATENCY = Histogram(
     "Time spent waiting on a successful upstream LLM response.",
     buckets=(0.25, 0.5, 1, 2, 4, 8, 15, 25, 40),
 )
+
+LLM_OUTCOMES = ("success", "timeout", "http_error", "invalid_response")
+LLM_REQUESTS = Counter(
+    "llm_requests",
+    "Upstream LLM calls, by outcome.",
+    ["outcome"],
+)
+# Export every outcome at 0 so dashboards and alerts see the series before the first failure.
+for outcome in LLM_OUTCOMES:
+    LLM_REQUESTS.labels(outcome=outcome)
+
+
+def llm_failed(outcome: str, error: Exception) -> NoReturn:
+    LLM_REQUESTS.labels(outcome=outcome).inc()
+    print(f"Llama interpretation failed ({outcome}): {type(error).__name__}")
+    raise HTTPException(status_code=502, detail="AI interpretation failed.") from error
 
 
 class NoteRequest(BaseModel):
@@ -149,8 +165,8 @@ def interpret(request: NoteRequest):
         raise HTTPException(status_code=503, detail="Set OPENROUTER_API_KEY in the backend terminal.")
 
     # Use a hosted Meta Llama model
+    llm_started = time.perf_counter()
     try:
-        llm_started = time.perf_counter()
         response = httpx.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -175,12 +191,18 @@ def interpret(request: NoteRequest):
             timeout=40.0,
         )
         response.raise_for_status()
-        LLM_LATENCY.observe(time.perf_counter() - llm_started)
+    except httpx.TimeoutException as error:
+        llm_failed("timeout", error)
+    except httpx.HTTPError as error:
+        llm_failed("http_error", error)
+    LLM_LATENCY.observe(time.perf_counter() - llm_started)
+
+    try:
         content = response.json()["choices"][0]["message"]["content"]
         result = Interpretation.model_validate_json(content)
-    except (httpx.HTTPError, ValidationError, ValueError, KeyError, IndexError, TypeError) as error:
-        print(f"Llama interpretation failed: {type(error).__name__}")
-        raise HTTPException(status_code=502, detail="AI interpretation failed.") from error
+    except (ValidationError, ValueError, KeyError, IndexError, TypeError) as error:
+        llm_failed("invalid_response", error)
+    LLM_REQUESTS.labels(outcome="success").inc()
 
     if not result.segments:
         return Interpretation(segments=[Segment(kind="text", content=request.text, readings=[])])
