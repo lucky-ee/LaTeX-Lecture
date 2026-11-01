@@ -1,10 +1,19 @@
 import os
 import re
+import time
 from typing import Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from prometheus_client import Histogram
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+LLM_LATENCY = Histogram(
+    "llm_request_duration_seconds",
+    "Time spent waiting on a successful upstream LLM response.",
+    buckets=(0.25, 0.5, 1, 2, 4, 8, 15, 25, 40),
+)
 
 
 class NoteRequest(BaseModel):
@@ -115,6 +124,7 @@ def known_wispr_notation(text: str) -> Interpretation | None:
 
 
 app = FastAPI(title="Wispr Lecture API")
+Instrumentator().instrument(app).expose(app, include_in_schema=False)
 
 
 @app.get("/api/health")
@@ -140,6 +150,7 @@ def interpret(request: NoteRequest):
 
     # Use a hosted Meta Llama model
     try:
+        llm_started = time.perf_counter()
         response = httpx.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -164,6 +175,7 @@ def interpret(request: NoteRequest):
             timeout=40.0,
         )
         response.raise_for_status()
+        LLM_LATENCY.observe(time.perf_counter() - llm_started)
         content = response.json()["choices"][0]["message"]["content"]
         result = Interpretation.model_validate_json(content)
     except (httpx.HTTPError, ValidationError, ValueError, KeyError, IndexError, TypeError) as error:

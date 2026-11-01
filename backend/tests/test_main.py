@@ -4,8 +4,9 @@ import unittest
 from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
-from main import NoteRequest, interpret, repair_latex
+from main import NoteRequest, app, interpret, repair_latex
 
 
 class InterpretationTests(unittest.TestCase):
@@ -110,6 +111,13 @@ class InterpretationTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as caught:
             interpret(NoteRequest(text="   "))
         self.assertEqual(caught.exception.status_code, 422)
+
+    def test_metrics_endpoint_exposes_request_and_llm_latency(self):
+        client = TestClient(app)
+        client.post("/api/interpret", json={"text": "(x^2)/2"})
+        body = client.get("/metrics").text
+        self.assertIn('http_request_duration_seconds_count{handler="/api/interpret"', body)
+        self.assertIn("llm_request_duration_seconds_bucket", body)
 
 
 if __name__ == "__main__":
