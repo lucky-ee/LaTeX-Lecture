@@ -1,6 +1,7 @@
 import os
 import re
 import time
+from contextlib import asynccontextmanager
 from typing import Literal, NoReturn
 
 import httpx
@@ -139,7 +140,23 @@ def known_wispr_notation(text: str) -> Interpretation | None:
     return Interpretation(segments=[Segment(kind="math", content=text, readings=options)])
 
 
-app = FastAPI(title="Wispr Lecture API")
+# One client for the whole app, so connections to OpenRouter are reused across requests.
+# Created at startup and closed at shutdown by `lifespan`.
+http_client: httpx.AsyncClient | None = None
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    global http_client
+    http_client = httpx.AsyncClient(timeout=40.0)
+    try:
+        yield
+    finally:
+        await http_client.aclose()
+        http_client = None
+
+
+app = FastAPI(title="Wispr Lecture API", lifespan=lifespan)
 Instrumentator().instrument(app).expose(app, include_in_schema=False)
 
 
@@ -149,7 +166,7 @@ def health():
 
 
 @app.post("/api/interpret", response_model=Interpretation)
-def interpret(request: NoteRequest):
+async def interpret(request: NoteRequest):
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=422, detail="Note cannot be blank.")
@@ -164,10 +181,14 @@ def interpret(request: NoteRequest):
     if not api_key:
         raise HTTPException(status_code=503, detail="Set OPENROUTER_API_KEY in the backend terminal.")
 
-    # Use a hosted Meta Llama model
+    if http_client is None:
+        raise RuntimeError("HTTP client not started; run the app through its lifespan.")
+
+    # Use a hosted Meta Llama model. Awaiting frees the server to handle other
+    # requests while this one waits on the LLM.
     llm_started = time.perf_counter()
     try:
-        response = httpx.post(
+        response = await http_client.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
             json={
@@ -188,7 +209,6 @@ def interpret(request: NoteRequest):
                 },
                 "provider": {"require_parameters": True},
             },
-            timeout=40.0,
         )
         response.raise_for_status()
     except httpx.TimeoutException as error:
