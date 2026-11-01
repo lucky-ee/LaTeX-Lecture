@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
 
-from main import NoteRequest, interpret
+from main import NoteRequest, interpret, repair_latex
 
 
 class InterpretationTests(unittest.TestCase):
@@ -70,6 +70,41 @@ class InterpretationTests(unittest.TestCase):
                 result = interpret(NoteRequest(text="Today we study limits."))
         self.assertEqual(result.segments[0].kind, "text")
         self.assertEqual(result.segments[0].content, "Today we study limits.")
+
+    def test_unescaped_latex_from_model_is_repaired(self):
+        # Llama sent "\int" and "\text" without doubling the backslash, so JSON
+        # decoded them as a carriage return and a tab (seen with "INT a to b x dx").
+        raw_content = (
+            '{"segments": [{"kind": "math", "content": "INT a to b x dx", '
+            '"readings": ["\\rint_{a}^{b} x \\text{ d}x"]}]}'
+        )
+        response = Mock()
+        response.json.return_value = {"choices": [{"message": {"content": raw_content}}]}
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+            with patch("main.httpx.post", return_value=response):
+                result = interpret(NoteRequest(text="INT a to b x dx"))
+        self.assertEqual(result.segments[0].readings, [r"\int_{a}^{b} x \text{ d}x"])
+        self.assertEqual(result.segments[0].content, "INT a to b x dx")
+
+    def test_repair_latex_restores_each_json_escape(self):
+        cases = {
+            "\rho": r"\rho",
+            "\frac{x^2}{2}": r"\frac{x^2}{2}",
+            "\beta + 1": r"\beta + 1",
+            "a \neq b": r"a \neq b",
+            "\theta": r"\theta",
+            "\rint_0^1": r"\int_0^1",
+            "\tsum_{n=1}^{\finfty}": r"\sum_{n=1}^{\infty}",
+        }
+        for broken, expected in cases.items():
+            with self.subTest(expected=expected):
+                self.assertEqual(repair_latex(broken), expected)
+
+    def test_repair_latex_leaves_correct_latex_and_plain_whitespace_alone(self):
+        self.assertEqual(repair_latex(r"\int_{a}^{b} x \, dx"), r"\int_{a}^{b} x \, dx")
+        self.assertEqual(repair_latex("x +\t1"), "x +\t1")
+        self.assertEqual(repair_latex("x = 1\n"), "x = 1\n")
+        self.assertEqual(repair_latex("a\nand b"), "a\nand b")
 
     def test_whitespace_only_input_is_rejected(self):
         with self.assertRaises(HTTPException) as caught:
