@@ -6,25 +6,10 @@ from typing import Literal, NoReturn
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from prometheus_client import Counter, Histogram
+from metrics import LLM_LATENCY, LLM_REQUESTS, stage_snapshot, time_stage
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-LLM_LATENCY = Histogram(
-    "llm_request_duration_seconds",
-    "Time spent waiting on a successful upstream LLM response.",
-    buckets=(0.25, 0.5, 1, 2, 4, 8, 15, 25, 40),
-)
-
-LLM_OUTCOMES = ("success", "timeout", "http_error", "invalid_response")
-LLM_REQUESTS = Counter(
-    "llm_requests",
-    "Upstream LLM calls, by outcome.",
-    ["outcome"],
-)
-# Export every outcome at 0 so dashboards and alerts see the series before the first failure.
-for outcome in LLM_OUTCOMES:
-    LLM_REQUESTS.labels(outcome=outcome)
 
 
 def llm_failed(outcome: str, error: Exception) -> NoReturn:
@@ -165,15 +150,22 @@ def health():
     return {"ok": True}
 
 
+@app.get("/api/metrics/stages")
+def processing_metrics():
+    return {"stages": stage_snapshot()}
+
+
 @app.post("/api/interpret", response_model=Interpretation)
 async def interpret(request: NoteRequest):
-    text = request.text.strip()
-    if not text:
-        raise HTTPException(status_code=422, detail="Note cannot be blank.")
+    with time_stage("input_check"):
+        text = request.text.strip()
+        if not text:
+            raise HTTPException(status_code=422, detail="Note cannot be blank.")
 
     # Flow/Canto performs speech transcription in the user's desktop app.
     # The backend receives only its resulting text, not raw microphone audio.
-    quick_result = known_wispr_notation(text)
+    with time_stage("local_match"):
+        quick_result = known_wispr_notation(text)
     if quick_result is not None:
         return quick_result
 
@@ -188,29 +180,30 @@ async def interpret(request: NoteRequest):
     # requests while this one waits on the LLM.
     llm_started = time.perf_counter()
     try:
-        response = await http_client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json={
-                "model": os.getenv("LLAMA_MODEL", "meta-llama/llama-3.3-70b-instruct"),
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": text},
-                ],
-                "temperature": 0.1,
-                "max_tokens": 2500,
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "interpretation",
-                        "strict": True,
-                        "schema": Interpretation.model_json_schema(),
+        with time_stage("upstream_request"):
+            response = await http_client.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": os.getenv("LLAMA_MODEL", "meta-llama/llama-3.3-70b-instruct"),
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": text},
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 2500,
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "interpretation",
+                            "strict": True,
+                            "schema": Interpretation.model_json_schema(),
+                        },
                     },
+                    "provider": {"require_parameters": True},
                 },
-                "provider": {"require_parameters": True},
-            },
-        )
-        response.raise_for_status()
+            )
+            response.raise_for_status()
     except httpx.TimeoutException as error:
         llm_failed("timeout", error)
     except httpx.HTTPError as error:
@@ -218,14 +211,16 @@ async def interpret(request: NoteRequest):
     LLM_LATENCY.observe(time.perf_counter() - llm_started)
 
     try:
-        content = response.json()["choices"][0]["message"]["content"]
-        result = Interpretation.model_validate_json(content)
+        with time_stage("response_parse"):
+            content = response.json()["choices"][0]["message"]["content"]
+            result = Interpretation.model_validate_json(content)
     except (ValidationError, ValueError, KeyError, IndexError, TypeError) as error:
         llm_failed("invalid_response", error)
     LLM_REQUESTS.labels(outcome="success").inc()
 
-    if not result.segments:
-        return Interpretation(segments=[Segment(kind="text", content=request.text, readings=[])])
-    for segment in result.segments:
-        segment.readings = [repair_latex(reading) for reading in segment.readings]
-    return result
+    with time_stage("latex_repair"):
+        if not result.segments:
+            return Interpretation(segments=[Segment(kind="text", content=request.text, readings=[])])
+        for segment in result.segments:
+            segment.readings = [repair_latex(reading) for reading in segment.readings]
+        return result
