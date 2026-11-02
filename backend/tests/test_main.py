@@ -209,6 +209,43 @@ class InterpretationTests(unittest.IsolatedAsyncioTestCase):
         # The upstream did answer, so its latency counts even though the content was unusable.
         self.assert_llm_metrics_changed(before, invalid_response=1, latency_count=1)
 
+    async def test_stage_metrics_include_failed_upstream_attempt(self):
+        labels = {"stage": "upstream_request", "outcome": "error"}
+        before = metric("interpret_stage_duration_seconds_count", **labels)
+        parsed = metric("interpret_stage_runs_total", stage="response_parse", outcome="success")
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+            with mock_llm(side_effect=httpx.ReadTimeout("slow")):
+                with self.assertRaises(HTTPException):
+                    await interpret(NoteRequest(text="Integral from a to b"))
+        self.assertEqual(metric("interpret_stage_duration_seconds_count", **labels) - before, 1)
+        self.assertEqual(metric("interpret_stage_runs_total", stage="response_parse", outcome="success"), parsed)
+
+    def test_stage_dashboard_reports_seconds_including_failures(self):
+        from metrics import time_stage
+        client = TestClient(app)
+        before = {row["stage"]: row for row in client.get("/api/metrics/stages").json()["stages"]}
+        with patch("metrics.time.perf_counter", side_effect=[10.0, 12.5]):
+            with self.assertRaises(ValueError):
+                with time_stage("latex_repair"):
+                    raise ValueError("test failure")
+        response = client.get("/api/metrics/stages")
+        self.assertEqual(response.status_code, 200)
+        after = {row["stage"]: row for row in response.json()["stages"]}
+        self.assertAlmostEqual(after["latex_repair"]["total_seconds"] - before["latex_repair"]["total_seconds"], 2.5)
+        self.assertEqual(after["latex_repair"]["attempts"] - before["latex_repair"]["attempts"], 1)
+        self.assertEqual(after["latex_repair"]["errors"] - before["latex_repair"]["errors"], 1)
+        self.assertAlmostEqual(after["latex_repair"]["average_seconds"], after["latex_repair"]["total_seconds"] / after["latex_repair"]["attempts"])
+
+    async def test_local_path_records_only_executed_stages(self):
+        stages = ("input_check", "local_match", "upstream_request", "response_parse", "latex_repair")
+        before = {stage: metric("interpret_stage_runs_total", stage=stage, outcome="success") for stage in stages}
+        await interpret(NoteRequest(text="(x^2)/2"))
+        for stage in stages:
+            self.assertEqual(
+                metric("interpret_stage_runs_total", stage=stage, outcome="success") - before[stage],
+                int(stage in ("input_check", "local_match")),
+            )
+
     async def test_slow_llm_calls_run_concurrently(self):
         # Each fake LLM call takes 0.3s. Ten of them one after another would take 3s;
         # running concurrently, they should all finish in roughly the time of one.
