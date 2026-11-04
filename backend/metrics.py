@@ -21,6 +21,11 @@ LLM_REQUESTS = Counter(
 for outcome in LLM_OUTCOMES:
     LLM_REQUESTS.labels(outcome=outcome)
 
+RATE_LIMITED = Counter(
+    "rate_limited_requests",
+    "Interpretation requests rejected with 429 by the per-client rate limit.",
+)
+
 
 STAGES = ("input_check", "local_match", "upstream_request", "response_parse", "latex_repair")
 STAGE_DURATION = Histogram(

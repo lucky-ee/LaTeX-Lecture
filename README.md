@@ -12,7 +12,7 @@ For example:
 
 The goal is to preserve what was dictated—not to solve problems, change a mathematical claim, or silently fill in missing assumptions.
 
-> **Project status:** Active prototype. Core note interpretation, a React interface, automated backend tests, and Prometheus instrumentation are implemented. Authentication, persistent note storage, rate limiting, and production deployment hardening are not yet implemented.
+> **Project status:** Active prototype. Core note interpretation, a React interface, automated backend tests, and Prometheus instrumentation are implemented. Per-client rate limiting, upstream retries, optional `/metrics` authentication, and configurable CORS are implemented. Authentication, persistent note storage, and full production deployment hardening are not yet implemented.
 >
 > Independent project; not affiliated with or endorsed by Wispr.
 
@@ -141,6 +141,9 @@ The backend reads configuration directly from environment variables. It does not
 | --- | --- | --- | --- |
 | `OPENROUTER_API_KEY` | For model-backed requests | Unset | Credential for OpenRouter; keep it server-side and secret |
 | `LLAMA_MODEL` | No | `meta-llama/llama-3.3-70b-instruct` | Model identifier used for interpretation |
+| `RATE_LIMIT_PER_MINUTE` | No | `20` | Maximum `POST /api/interpret` requests per client IP per minute; `0` disables the limit |
+| `METRICS_TOKEN` | Recommended in production | Unset | When set, `GET /metrics` requires `Authorization: Bearer <token>`; when unset, it is open |
+| `CORS_ORIGINS` | Only for a cross-origin frontend | Unset | Comma-separated browser origins allowed to call the API, e.g. `https://app.example.com`; unset means same-origin only |
 
 Configuration is read once when the backend starts, so restart it after changing these variables. If `OPENROUTER_API_KEY` is not set, the backend logs a warning at startup; recognized local notation still works, and other valid interpretation requests return **503 Service Unavailable**.
 
@@ -191,8 +194,11 @@ This shows the schema, not a guaranteed response for any particular model-genera
 | --- | --- |
 | `200` | Interpretation returned |
 | `422` | Invalid input, missing field, or blank transcription |
+| `429` | Per-client rate limit exceeded; the `Retry-After` header gives the wait in seconds |
 | `502` | Upstream model call failed or the model response was unusable |
-| `503` | OpenRouter key missing for a request that requires model interpretation |
+| `503` | OpenRouter key missing, or OpenRouter itself is rate limiting the backend |
+
+Upstream timeouts, connection errors, and 5xx responses are retried once after a short delay. Upstream 429 and authentication errors are not retried; a 401/403 from OpenRouter is logged as an error so a bad API key is easy to spot.
 
 The frontend retains the user's original note when interpretation fails; HTTP errors are not silently converted into successful API responses.
 
@@ -205,7 +211,8 @@ Prometheus-format metrics are available at **`GET /metrics`**.
 | `http_requests_total` | Counter | HTTP request count by handler, method, and grouped status |
 | `http_request_duration_seconds` | Histogram | Backend request duration |
 | `llm_request_duration_seconds` | Histogram | Time spent waiting for a model response, including responses later found unusable |
-| `llm_requests_total{outcome="..."}` | Counter | LLM calls categorized by `success`, `timeout`, `http_error`, or `invalid_response` |
+| `llm_requests_total{outcome="..."}` | Counter | LLM call attempts categorized by `success`, `timeout`, `http_error`, or `invalid_response`; a retried call counts each attempt |
+| `rate_limited_requests_total` | Counter | Interpretation requests rejected with 429 by the per-client rate limit |
 
 Open the app at http://localhost:5173 to view the **Processing time** table. It refreshes every two seconds and shows cumulative seconds, average seconds per attempt, attempts, and errors for each stage. Totals include failed attempts and reset when the backend restarts. The same data is available as JSON at `GET /api/metrics/stages`.
 
@@ -240,7 +247,7 @@ Known local-pattern matches do not call the model and therefore do not increment
 curl http://localhost:8000/metrics
 ```
 
-**Security:** `/metrics` is useful for development and monitoring, but should not be exposed openly on a production public interface. Restrict access to authorized monitoring infrastructure.
+**Security:** set `METRICS_TOKEN` in production so `/metrics` requires `Authorization: Bearer <token>` (Prometheus supports this via `authorization` in its scrape config). `GET /api/metrics/stages` stays open because the frontend's **Processing time** panel reads it.
 
 The current instrumentation exposes measurements; it does not itself provide a hosted Prometheus server, dashboard, alerting system, or load-testing infrastructure.
 
@@ -298,7 +305,9 @@ Wispr Lecture is currently an actively developed prototype. The following capabi
 
 ### Access Control and Abuse Prevention
 
-Implement authentication if accounts are introduced, along with request rate limiting and AI usage quotas to protect against abuse and excessive model costs.
+`POST /api/interpret` is rate limited per client IP (`RATE_LIMIT_PER_MINUTE`). The limiter is in memory, so each worker process or replica keeps its own counts; move it to a shared store such as Redis before scaling out. Behind a reverse proxy, run uvicorn with `--proxy-headers` and `--forwarded-allow-ips` so the limit applies to real client IPs rather than the proxy's.
+
+Still to do: authentication if accounts are introduced, and per-user AI usage quotas.
 
 ### Data Privacy
 
@@ -319,16 +328,16 @@ The backend uses a shared asynchronous HTTP client to improve concurrency and re
 Future production improvements include:
 
 - Bounded concurrency for LLM requests
-- Rate limiting and usage quotas
+- Shared (multi-process) rate limiting and per-user usage quotas
 - Load testing to establish throughput and latency targets
 - Horizontal scaling behind a load balancer
-- Appropriate upstream error handling and backpressure
+- Backpressure when the upstream provider is slow or rate limiting
 
 Asynchronous HTTP processing improves server efficiency but does not eliminate upstream provider rate limits.
 
 ### Monitoring
 
-Restrict access to `/metrics` and configure external collection, dashboards, and alerts.
+Set `METRICS_TOKEN` to restrict `/metrics`, and configure external collection, dashboards, and alerts.
 
 Use metrics to track request latency, error rates, LLM response times, and upstream failure categories.
 
