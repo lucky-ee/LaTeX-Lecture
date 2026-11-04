@@ -29,3 +29,18 @@ body {
   color: #737373;
   line-height: 1.6;
 }
+
+.stage-metrics {
+  margin: 32px 0;
+  padding: 24px;
+  border: 1px solid #deded9;
+  border-radius: 12px;
+  background: white;
+}
+.stage-metrics h2 { margin-top: 0; }
+.stage-metrics p { color: #666; font-size: 13px; line-height: 1.5; }
+.metrics-scroll { overflow-x: auto; }
+.stage-metrics table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.stage-metrics th, .stage-metrics td { padding: 12px 8px; border-bottom: 1px solid #eee; text-align: right; white-space: nowrap; }
+.stage-metrics th:first-child { text-align: left; }
+.stage-metrics td { font-variant-numeric: tabular-nums; }

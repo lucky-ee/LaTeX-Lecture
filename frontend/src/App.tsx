@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import katex from 'katex';
+import { apiUrl } from './config';
 
 type Segment = {
   kind: 'text' | 'math';
@@ -75,6 +76,68 @@ function NoteContent({ note }: { note: Note }) {
   );
 }
 
+type StageMetric = {
+  stage: string;
+  total_seconds: number;
+  average_seconds: number | null;
+  attempts: number;
+  errors: number;
+};
+
+const stageNames: Record<string, string> = {
+  input_check: 'Input checks',
+  local_match: 'Local matching',
+  upstream_request: 'LLM request',
+  response_parse: 'Response parsing',
+  latex_repair: 'LaTeX repair',
+};
+
+function StageMetrics() {
+  const [stages, setStages] = useState<StageMetric[]>([]);
+  const [unavailable, setUnavailable] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    async function refresh() {
+      try {
+        const response = await fetch(apiUrl('/api/metrics/stages'), { signal: controller.signal });
+        if (!response.ok) throw new Error('Metrics unavailable');
+        const data: { stages: StageMetric[] } = await response.json();
+        if (!controller.signal.aborted) {
+          setStages(data.stages);
+          setUnavailable(false);
+        }
+      } catch {
+        if (!controller.signal.aborted) setUnavailable(true);
+      }
+    }
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 2000);
+    return () => { controller.abort(); window.clearInterval(timer); };
+  }, []);
+
+  return (
+    <section className="stage-metrics" aria-labelledby="metrics-title">
+      <h2 id="metrics-title">Processing time</h2>
+      <p>Total seconds since the backend started, including failed attempts. Updates every 2 seconds.</p>
+      {unavailable && <p role="status">Metrics unavailable. Retrying… {stages.length > 0 && 'Showing the last readings.'}</p>}
+      {!stages.length && !unavailable && <p>Loading timings…</p>}
+      {stages.length > 0 && <div className="metrics-scroll"><table>
+        <thead><tr><th>Stage</th><th>Total seconds</th><th>Average seconds</th><th>Attempts</th><th>Errors</th></tr></thead>
+        <tbody>{stages.map((stage) => (
+          <tr key={stage.stage}>
+            <th scope="row">{stageNames[stage.stage] ?? stage.stage}</th>
+            <td>{stage.total_seconds.toFixed(6)} s</td>
+            <td>{stage.average_seconds === null ? '—' : `${stage.average_seconds.toFixed(6)} s`}</td>
+            <td>{stage.attempts}</td><td>{stage.errors}</td>
+          </tr>
+        ))}</tbody>
+      </table></div>}
+      <p>Only executed stages are counted. Transcription and browser rendering are outside these timings.</p>
+    </section>
+  );
+}
+
 export default function App() {
   const [draft, setDraft] = useState('');
   const [notes, setNotes] = useState<Note[]>([]);
@@ -92,7 +155,7 @@ export default function App() {
     ]);
 
     try {
-      const response = await fetch('/api/interpret', {
+      const response = await fetch(apiUrl('/api/interpret'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: original }),
@@ -176,6 +239,8 @@ export default function App() {
           <button type="submit" className="submit" disabled={!draft.trim()}>Add note</button>
         </div>
       </form>
+
+      <StageMetrics />
 
       <footer>Independent feature prototype · Not affiliated with Wispr</footer>
     </main>
