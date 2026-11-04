@@ -142,7 +142,7 @@ The backend reads configuration directly from environment variables. It does not
 | `OPENROUTER_API_KEY` | For model-backed requests | Unset | Credential for OpenRouter; keep it server-side and secret |
 | `LLAMA_MODEL` | No | `meta-llama/llama-3.3-70b-instruct` | Model identifier used for interpretation |
 
-If `OPENROUTER_API_KEY` is not set, recognized local notation still works; other valid interpretation requests return **503 Service Unavailable**.
+Configuration is read once when the backend starts, so restart it after changing these variables. If `OPENROUTER_API_KEY` is not set, the backend logs a warning at startup; recognized local notation still works, and other valid interpretation requests return **503 Service Unavailable**.
 
 **Never commit API keys, `.env` files, or other credentials.** In a deployed environment, use your hosting provider's secret-management mechanism.
 
@@ -272,7 +272,14 @@ The workflow installs dependencies in Python 3.12 and runs the backend test suit
 ```text
 wispr-lecture/
 ├── backend/
-│   ├── main.py                 # FastAPI endpoints and LLM integration
+│   ├── main.py                 # FastAPI app and routes
+│   ├── llm.py                  # OpenRouter call, error handling, LLM metrics
+│   ├── prompts.py              # System prompt and its version
+│   ├── schemas.py              # Request/response models
+│   ├── settings.py             # Environment configuration
+│   ├── latex.py                # Repair of LaTeX mangled by JSON escaping
+│   ├── local_notation.py       # Inputs answered without calling the model
+│   ├── metrics.py              # Prometheus metrics and stage timing
 │   ├── requirements.txt        # Python dependencies
 │   └── tests/                  # Backend tests
 ├── frontend/                   # React + TypeScript + Vite app

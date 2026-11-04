@@ -11,7 +11,10 @@ from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 
 import main
-from main import NoteRequest, app, interpret, repair_latex
+from latex import repair_latex
+from main import app, interpret
+from schemas import NoteRequest
+from settings import DEFAULT_MODEL, Settings, load_settings
 
 
 def metric(name, **labels):
@@ -26,6 +29,11 @@ def llm_metrics():
     }
     snapshot["latency_count"] = metric("llm_request_duration_seconds_count")
     return snapshot
+
+
+def api_key(key):
+    """Run with settings as if OPENROUTER_API_KEY were `key` (None = unset)."""
+    return patch("main.settings", Settings(openrouter_api_key=key))
 
 
 def mock_llm(**post_behavior):
@@ -45,19 +53,19 @@ def llm_reply(segments):
 
 class InterpretationTests(unittest.IsolatedAsyncioTestCase):
     async def test_observed_fraction_is_renderable_without_api_key(self):
-        with patch.dict(os.environ, {}, clear=True):
+        with api_key(None):
             result = await interpret(NoteRequest(text="(x^2)/2"))
         self.assertEqual(result.segments[0].readings, [r"\frac{x^2}{2}"])
 
     async def test_ambiguous_observed_fraction_has_two_readings(self):
-        with patch.dict(os.environ, {}, clear=True):
+        with api_key(None):
             result = await interpret(NoteRequest(text=" (1 + x^2) / 2 "))
         self.assertEqual(result.segments[0].readings, [
             r"\frac{1+x^2}{2}", r"1+\frac{x^2}{2}"
         ])
 
     async def test_complex_proof_requires_openrouter_key(self):
-        with patch.dict(os.environ, {}, clear=True):
+        with api_key(None):
             with self.assertRaises(HTTPException) as caught:
                 await interpret(NoteRequest(text="For all epsilon greater than zero"))
         self.assertEqual(caught.exception.status_code, 503)
@@ -74,7 +82,7 @@ class InterpretationTests(unittest.IsolatedAsyncioTestCase):
         response.json.return_value = {
             "choices": [{"message": {"content": json.dumps(provider_output)}}]
         }
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+        with api_key("test-only"):
             with mock_llm(return_value=response) as client:
                 result = await interpret(NoteRequest(text="for all epsilon greater than zero"))
 
@@ -88,7 +96,7 @@ class InterpretationTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_model_response_returns_safe_gateway_error(self):
         response = Mock()
         response.json.return_value = {"choices": [{"message": {"content": "not json"}}]}
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+        with api_key("test-only"):
             with mock_llm(return_value=response):
                 with self.assertRaises(HTTPException) as caught:
                     await interpret(NoteRequest(text="Integral from a to b"))
@@ -100,7 +108,7 @@ class InterpretationTests(unittest.IsolatedAsyncioTestCase):
         response.json.return_value = {
             "choices": [{"message": {"content": '{"segments": []}'}}]
         }
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+        with api_key("test-only"):
             with mock_llm(return_value=response):
                 result = await interpret(NoteRequest(text="Today we study limits."))
         self.assertEqual(result.segments[0].kind, "text")
@@ -115,7 +123,7 @@ class InterpretationTests(unittest.IsolatedAsyncioTestCase):
         )
         response = Mock()
         response.json.return_value = {"choices": [{"message": {"content": raw_content}}]}
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+        with api_key("test-only"):
             with mock_llm(return_value=response):
                 result = await interpret(NoteRequest(text="INT a to b x dx"))
         self.assertEqual(result.segments[0].readings, [r"\int_{a}^{b} x \text{ d}x"])
@@ -156,7 +164,7 @@ class InterpretationTests(unittest.IsolatedAsyncioTestCase):
         client = TestClient(app)
         reply = llm_reply([{"kind": "text", "content": "Today we study limits.", "readings": []}])
         before = llm_metrics()
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+        with api_key("test-only"):
             with mock_llm(return_value=reply):
                 response = client.post("/api/interpret", json={"text": "Today we study limits."})
         self.assertEqual(response.status_code, 200)
@@ -170,13 +178,13 @@ class InterpretationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_known_notation_does_not_count_as_an_llm_call(self):
         before = llm_metrics()
-        with patch.dict(os.environ, {}, clear=True):
+        with api_key(None):
             await interpret(NoteRequest(text="(x^2)/2"))
         self.assert_llm_metrics_changed(before)
 
     async def test_llm_timeout_is_counted_without_latency(self):
         before = llm_metrics()
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+        with api_key("test-only"):
             with mock_llm(side_effect=httpx.ReadTimeout("slow")):
                 with self.assertRaises(HTTPException) as caught:
                     await interpret(NoteRequest(text="Integral from a to b"))
@@ -191,7 +199,7 @@ class InterpretationTests(unittest.IsolatedAsyncioTestCase):
             response=httpx.Response(429),
         )
         before = llm_metrics()
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+        with api_key("test-only"):
             with mock_llm(return_value=response):
                 with self.assertRaises(HTTPException) as caught:
                     await interpret(NoteRequest(text="Integral from a to b"))
@@ -202,7 +210,7 @@ class InterpretationTests(unittest.IsolatedAsyncioTestCase):
         response = Mock()
         response.json.return_value = {"choices": [{"message": {"content": "not json"}}]}
         before = llm_metrics()
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+        with api_key("test-only"):
             with mock_llm(return_value=response):
                 with self.assertRaises(HTTPException):
                     await interpret(NoteRequest(text="Integral from a to b"))
@@ -213,7 +221,7 @@ class InterpretationTests(unittest.IsolatedAsyncioTestCase):
         labels = {"stage": "upstream_request", "outcome": "error"}
         before = metric("interpret_stage_duration_seconds_count", **labels)
         parsed = metric("interpret_stage_runs_total", stage="response_parse", outcome="success")
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+        with api_key("test-only"):
             with mock_llm(side_effect=httpx.ReadTimeout("slow")):
                 with self.assertRaises(HTTPException):
                     await interpret(NoteRequest(text="Integral from a to b"))
@@ -256,7 +264,7 @@ class InterpretationTests(unittest.IsolatedAsyncioTestCase):
             return reply
 
         notes = [NoteRequest(text=f"Today we study limits, part {i}.") for i in range(10)]
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-only"}, clear=True):
+        with api_key("test-only"):
             with mock_llm(side_effect=slow_post):
                 started = time.perf_counter()
                 results = await asyncio.gather(*(interpret(note) for note in notes))
@@ -272,6 +280,24 @@ class InterpretationTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(client.is_closed)
         self.assertTrue(client.is_closed)
         self.assertIsNone(main.http_client)
+
+
+class SettingsTests(unittest.TestCase):
+    def test_settings_read_key_and_model_from_environment(self):
+        env = {"OPENROUTER_API_KEY": "secret", "LLAMA_MODEL": "some/model"}
+        with patch.dict(os.environ, env, clear=True):
+            settings = load_settings()
+        self.assertEqual(settings.openrouter_api_key, "secret")
+        self.assertEqual(settings.llama_model, "some/model")
+        self.assertTrue(settings.llm_configured)
+
+    def test_missing_or_empty_environment_uses_defaults(self):
+        for env in ({}, {"OPENROUTER_API_KEY": "", "LLAMA_MODEL": ""}):
+            with self.subTest(env=env), patch.dict(os.environ, env, clear=True):
+                settings = load_settings()
+                self.assertIsNone(settings.openrouter_api_key)
+                self.assertEqual(settings.llama_model, DEFAULT_MODEL)
+                self.assertFalse(settings.llm_configured)
 
 
 if __name__ == "__main__":
