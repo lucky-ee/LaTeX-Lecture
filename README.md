@@ -207,6 +207,33 @@ Prometheus-format metrics are available at **`GET /metrics`**.
 | `llm_request_duration_seconds` | Histogram | Time spent waiting for a model response, including responses later found unusable |
 | `llm_requests_total{outcome="..."}` | Counter | LLM calls categorized by `success`, `timeout`, `http_error`, or `invalid_response` |
 
+Open the app at http://localhost:5173 to view the **Processing time** table. It refreshes every two seconds and shows cumulative seconds, average seconds per attempt, attempts, and errors for each stage. Totals include failed attempts and reset when the backend restarts. The same data is available as JSON at `GET /api/metrics/stages`.
+
+Stage metrics are defined in `backend/metrics.py` and exposed at `/metrics`:
+
+- `interpret_stage_runs_total{stage, outcome}` counts completed stage attempts.
+- `interpret_stage_duration_seconds{stage, outcome}` measures duration, including failures.
+- Stages: `input_check` (whitespace validation), `local_match`, `upstream_request` (request preparation, network wait, HTTP status check), `response_parse` (JSON and schema validation), and `latex_repair` (repair or empty-result fallback).
+- Outcomes: `success` and `error`. Skipped stages do not increment. Local matching succeeds even when no pattern matches.
+
+Average seconds per executed stage over five minutes:
+
+```promql
+sum by (stage) (rate(interpret_stage_duration_seconds_sum[5m]))
+/
+sum by (stage) (rate(interpret_stage_duration_seconds_count[5m]))
+```
+
+Estimated p95 per stage:
+
+```promql
+histogram_quantile(0.95,
+  sum by (stage, le) (rate(interpret_stage_duration_seconds_bucket[5m]))
+)
+```
+
+These measure backend processing. Existing HTTP metrics cover whole requests, including FastAPI validation and serialization. Desktop transcription, browser network time, and KaTeX rendering need separate client instrumentation. Stage averages describe only requests executing that stage, so do not sum averages across the local and model paths.
+
 Known local-pattern matches do not call the model and therefore do not increment the LLM call counter. The LLM duration histogram does not currently record timeouts or upstream HTTP/connection failures.
 
 ```bash
