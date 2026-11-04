@@ -8,7 +8,6 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from latex import repair_latex
 from llm import LLMError, interpret_with_llm
-from local_notation import known_wispr_notation
 from metrics import RATE_LIMITED, stage_snapshot, time_stage
 from prometheus_fastapi_instrumentator import Instrumentator
 from rate_limit import RateLimiter
@@ -29,7 +28,7 @@ http_client: httpx.AsyncClient | None = None
 async def lifespan(_app: FastAPI):
     global http_client
     if not settings.llm_configured:
-        logger.warning("OPENROUTER_API_KEY is not set; only locally recognized notation will work.")
+        logger.warning("OPENROUTER_API_KEY is not set; interpretation requests will return 503.")
     http_client = httpx.AsyncClient(timeout=settings.llm_timeout_seconds)
     try:
         yield
@@ -92,11 +91,6 @@ async def interpret(request: NoteRequest):
 
     # Flow/Canto performs speech transcription in the user's desktop app.
     # The backend receives only its resulting text, not raw microphone audio.
-    with time_stage("local_match"):
-        quick_result = known_wispr_notation(text)
-    if quick_result is not None:
-        return quick_result
-
     if not settings.llm_configured:
         raise HTTPException(status_code=503, detail="AI interpretation is not configured.")
     if http_client is None:

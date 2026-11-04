@@ -27,7 +27,7 @@ RATE_LIMITED = Counter(
 )
 
 
-STAGES = ("input_check", "local_match", "upstream_request", "response_parse", "latex_repair")
+STAGES = ("input_check", "upstream_request", "response_parse", "latex_repair")
 STAGE_DURATION = Histogram(
     "interpret_stage_duration_seconds",
     "Elapsed wall time for each interpretation stage, including failed attempts.",

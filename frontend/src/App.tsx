@@ -86,7 +86,6 @@ type StageMetric = {
 
 const stageNames: Record<string, string> = {
   input_check: 'Input checks',
-  local_match: 'Local matching',
   upstream_request: 'LLM request',
   response_parse: 'Response parsing',
   latex_repair: 'LaTeX repair',
