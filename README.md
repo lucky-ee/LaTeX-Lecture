@@ -285,8 +285,6 @@ wispr-lecture/
 └── README.md
 ```
 
-The root-level `index.html` and `readings.js`, if still present, belong to an earlier prototype. Use `frontend/` for the current React application.
-
 ## Deployment and Security
 
 Wispr Lecture is currently an actively developed prototype. The following capabilities are required or recommended before exposing the application to public production traffic.
