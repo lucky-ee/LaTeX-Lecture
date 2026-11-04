@@ -73,7 +73,7 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
 
-# Required for LLM-backed interpretation, but not for known local patterns.
+# Required: every interpretation request calls the model.
 export OPENROUTER_API_KEY="your-openrouter-api-key"
 
 uvicorn main:app --reload --port 8000
@@ -106,7 +106,7 @@ In local development, Vite forwards `/api` requests to the backend running on po
 
 ### 3. Try an Interpretation
 
-With the backend running, submit an expression handled by its local fast path:
+With the backend running and `OPENROUTER_API_KEY` set, submit an ambiguous expression:
 
 ```bash
 curl -X POST http://localhost:8000/api/interpret \
@@ -131,7 +131,7 @@ Example response:
 }
 ```
 
-This example requires no OpenRouter API key because the expression matches a locally recognized pattern. For an unfamiliar expression, the backend uses the configured OpenRouter model.
+Every request is interpreted by the configured OpenRouter model, so this needs `OPENROUTER_API_KEY`. Model output can vary; this shows the expected shape for an ambiguous fraction.
 
 ## Configuration
 
@@ -145,7 +145,7 @@ The backend reads configuration directly from environment variables. It does not
 | `METRICS_TOKEN` | Recommended in production | Unset | When set, `GET /metrics` requires `Authorization: Bearer <token>`; when unset, it is open |
 | `CORS_ORIGINS` | Only for a cross-origin frontend | Unset | Comma-separated browser origins allowed to call the API, e.g. `https://app.example.com`; unset means same-origin only |
 
-Configuration is read once when the backend starts, so restart it after changing these variables. If `OPENROUTER_API_KEY` is not set, the backend logs a warning at startup; recognized local notation still works, and other valid interpretation requests return **503 Service Unavailable**.
+Configuration is read once when the backend starts, so restart it after changing these variables. If `OPENROUTER_API_KEY` is not set, the backend logs a warning at startup and valid interpretation requests return **503 Service Unavailable**.
 
 **Never commit API keys, `.env` files, or other credentials.** In a deployed environment, use your hosting provider's secret-management mechanism.
 
@@ -220,8 +220,8 @@ Stage metrics are defined in `backend/metrics.py` and exposed at `/metrics`:
 
 - `interpret_stage_runs_total{stage, outcome}` counts completed stage attempts.
 - `interpret_stage_duration_seconds{stage, outcome}` measures duration, including failures.
-- Stages: `input_check` (whitespace validation), `local_match`, `upstream_request` (request preparation, network wait, HTTP status check), `response_parse` (JSON and schema validation), and `latex_repair` (repair or empty-result fallback).
-- Outcomes: `success` and `error`. Skipped stages do not increment. Local matching succeeds even when no pattern matches.
+- Stages: `input_check` (whitespace validation), `upstream_request` (request preparation, network wait, HTTP status check), `response_parse` (JSON and schema validation), and `latex_repair` (repair or empty-result fallback).
+- Outcomes: `success` and `error`. Skipped stages do not increment.
 
 Average seconds per executed stage over five minutes:
 
@@ -239,9 +239,9 @@ histogram_quantile(0.95,
 )
 ```
 
-These measure backend processing. Existing HTTP metrics cover whole requests, including FastAPI validation and serialization. Desktop transcription, browser network time, and KaTeX rendering need separate client instrumentation. Stage averages describe only requests executing that stage, so do not sum averages across the local and model paths.
+These measure backend processing. Existing HTTP metrics cover whole requests, including FastAPI validation and serialization. Desktop transcription, browser network time, and KaTeX rendering need separate client instrumentation. Stage averages describe only requests executing that stage.
 
-Known local-pattern matches do not call the model and therefore do not increment the LLM call counter. The LLM duration histogram does not currently record timeouts or upstream HTTP/connection failures.
+The LLM duration histogram does not currently record timeouts or upstream HTTP/connection failures.
 
 ```bash
 curl http://localhost:8000/metrics
@@ -265,6 +265,18 @@ Backend tests use mocked OpenRouter responses, so the test suite does not requir
 
 Tests cover interpretation, rendering-related LaTeX handling, metrics, error outcomes, asynchronous request behavior, and HTTP-client lifecycle.
 
+### Prompt evaluation
+
+Unit tests mock the model, so they cannot tell whether a prompt change makes output better or worse. `backend/evals/prompt_eval.py` sends the cases in `backend/evals/cases.json` to the real model and reports schema failures, how often `repair_latex` was needed, KaTeX render rate, prompt-injection cases the model obeyed, and how much of the input survives in the output. It makes billed API calls and is not run in CI.
+
+```bash
+cd backend
+python evals/prompt_eval.py --reps 3                    # current prompt
+python evals/prompt_eval.py --system-prompt-file old.txt --no-delimiters --label old
+```
+
+Run it before and after any change to `prompts.py`, and bump `PROMPT_VERSION`. KaTeX rendering checks validity, not correctness: a reading can render and still be wrong.
+
 The GitHub Actions workflow in `.github/workflows/backend-tests.yml` runs backend tests on:
 
 - Every pull request
@@ -285,7 +297,7 @@ wispr-lecture/
 │   ├── schemas.py              # Request/response models
 │   ├── settings.py             # Environment configuration
 │   ├── latex.py                # Repair of LaTeX mangled by JSON escaping
-│   ├── local_notation.py       # Inputs answered without calling the model
+│   ├── evals/                  # Prompt evaluation against the real model (billed; not run in CI)
 │   ├── metrics.py              # Prometheus metrics and stage timing
 │   ├── requirements.txt        # Python dependencies
 │   └── tests/                  # Backend tests

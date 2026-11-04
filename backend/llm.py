@@ -6,7 +6,7 @@ import time
 
 import httpx
 from metrics import LLM_LATENCY, LLM_REQUESTS, time_stage
-from prompts import PROMPT_VERSION, SYSTEM_PROMPT
+from prompts import PROMPT_VERSION, SYSTEM_PROMPT, user_message
 from pydantic import ValidationError
 from schemas import Interpretation
 from settings import Settings
@@ -62,7 +62,7 @@ def _request_body(settings: Settings, text: str) -> dict:
         "model": settings.llama_model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": text},
+            {"role": "user", "content": user_message(text)},
         ],
         "temperature": 0.1,
         "max_tokens": 2500,
