@@ -16,7 +16,8 @@ from latex import repair_latex
 from main import app, interpret
 from prompts import user_message
 from rate_limit import RateLimiter
-from schemas import NoteRequest
+from schemas import NoteRequest, Segment
+from segments import remove_repeated_math
 from settings import DEFAULT_MODEL, DEFAULT_RATE_LIMIT_PER_MINUTE, Settings, load_settings
 
 
@@ -139,6 +140,51 @@ class InterpretationTests(unittest.IsolatedAsyncioTestCase):
                 result = await interpret(NoteRequest(text="INT a to b x dx"))
         self.assertEqual(result.segments[0].readings, [r"\int_{a}^{b} x \text{ d}x"])
         self.assertEqual(result.segments[0].content, "INT a to b x dx")
+
+    async def test_math_phrase_repeated_in_text_is_removed(self):
+        # Seen with interpret-v3: the whole sentence came back as text, then the
+        # spoken integral again as math, so it rendered twice.
+        provider_output = {"segments": [
+            {"kind": "text", "content": "Today, we will be analyzing the integral from a to b of 1 over x", "readings": []},
+            {"kind": "math", "content": "the integral from a to b of 1 over x", "readings": [r"\int_{a}^{b} \frac{1}{x} dx"]},
+        ]}
+        response = Mock()
+        response.json.return_value = {"choices": [{"message": {"content": json.dumps(provider_output)}}]}
+        with api_key("test-only"):
+            with mock_llm(return_value=response):
+                result = await interpret(NoteRequest(text="Today, we will be analyzing the integral from a to b of 1 over x"))
+        self.assertEqual(
+            [(segment.kind, segment.content) for segment in result.segments],
+            [("text", "Today, we will be analyzing "), ("math", "the integral from a to b of 1 over x")],
+        )
+
+
+class RemoveRepeatedMathTests(unittest.TestCase):
+    def segments(self, *pairs):
+        return [Segment(kind=kind, content=content, readings=["x"] if kind == "math" else []) for kind, content in pairs]
+
+    def test_words_after_the_repeated_phrase_move_after_the_math(self):
+        result = remove_repeated_math(self.segments(
+            ("text", "The mean is (1 + x^2) / 2 over the interval."),
+            ("math", "(1 + x^2) / 2"),
+        ))
+        self.assertEqual(
+            [(segment.kind, segment.content) for segment in result],
+            [("text", "The mean is "), ("math", "(1 + x^2) / 2"), ("text", " over the interval.")],
+        )
+
+    def test_match_ignores_case_and_spacing(self):
+        result = remove_repeated_math(self.segments(("text", "So  The Limit  is zero"), ("math", "the limit")))
+        self.assertEqual([segment.content for segment in result], ["So  ", "the limit", "  is zero"])
+
+    def test_correctly_split_segments_are_unchanged(self):
+        original = self.segments(("text", "Today we analyze "), ("math", "x squared"), ("text", "."))
+        self.assertEqual(remove_repeated_math(original), original)
+
+    def test_math_without_readings_is_left_alone(self):
+        original = self.segments(("text", "we have x squared"))
+        original.append(Segment(kind="math", content="x squared", readings=[]))
+        self.assertEqual(remove_repeated_math(original), original)
 
     def test_repair_latex_restores_each_json_escape(self):
         cases = {

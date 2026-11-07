@@ -1,247 +1,196 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import katex from 'katex';
+import { useEffect, useRef, useState } from 'react';
 import { apiUrl } from './config';
+import Home from './Home';
+import Landing from './Landing';
+import { noteToLatex } from './notes';
+import PageView from './PageView';
+import Sidebar from './Sidebar';
+import { loadPages, newId, savePages } from './storage';
+import type { Note, Page, Segment } from './types';
 
-type Segment = {
-  kind: 'text' | 'math';
-  content: string;
-  readings: string[];
-};
+type Route = { name: 'landing' } | { name: 'home' } | { name: 'page'; id: string };
 
-type Note = {
-  id: number;
-  original: string;
-  segments: Segment[] | null;
-  status: 'loading' | 'ready' | 'error';
-};
+// Routes live in the URL hash (#/home, #/page/<id>) so the app works on any
+// static host without server-side rewrites.
+function parseRoute(hash: string): Route {
+  const path = hash.replace(/^#/, '');
+  if (path === '/home') return { name: 'home' };
+  const page = path.match(/^\/page\/([\w-]+)$/);
+  if (page) return { name: 'page', id: page[1] };
+  return { name: 'landing' };
+}
 
-// KaTeX renders into a DOM element. React still owns the rest of the interface.
-function MathView({ latex }: { latex: string }) {
-  const element = useRef<HTMLSpanElement>(null);
-
+function useRoute() {
+  const [route, setRoute] = useState(() => parseRoute(window.location.hash));
   useEffect(() => {
-    if (!element.current) return;
-    try {
-      katex.render(latex, element.current, { throwOnError: true, trust: false });
-    } catch {
-      element.current.textContent = latex;
-      element.current.title = 'Could not render this LaTeX';
-    }
-  }, [latex]);
-
-  return <span ref={element} className="math" />;
-}
-
-function MathSegment({ segment }: { segment: Segment }) {
-  const [chosen, setChosen] = useState<string | null>(null);
-  const options = [...new Set(segment.readings.filter(Boolean))].slice(0, 3);
-
-  if (options.length === 0) return <span>{segment.content}</span>;
-  if (chosen !== null) return <MathView latex={chosen} />;
-  if (options.length === 1) return <MathView latex={options[0]} />;
-
-  return (
-    <span className="choices" aria-label="Choose the intended equation">
-      <span className="choice-label">Choose equation:</span>
-      {options.map((latex, index) => (
-        <button
-          className="choice"
-          type="button"
-          key={latex}
-          onClick={() => setChosen(latex)}
-          aria-label={`Choose reading ${index + 1}`}
-        >
-          <MathView latex={latex} />
-        </button>
-      ))}
-    </span>
-  );
-}
-
-function NoteContent({ note }: { note: Note }) {
-  if (!note.segments || note.segments.length === 0) {
-    return <span>{note.original}</span>;
-  }
-
-  return (
-    <>
-      {note.segments.map((segment, index) =>
-        segment.kind === 'math' ? (
-          <MathSegment segment={segment} key={index} />
-        ) : (
-          <span key={index}>{segment.content}</span>
-        ),
-      )}
-    </>
-  );
-}
-
-type StageMetric = {
-  stage: string;
-  total_seconds: number;
-  average_seconds: number | null;
-  attempts: number;
-  errors: number;
-};
-
-const stageNames: Record<string, string> = {
-  input_check: 'Input checks',
-  upstream_request: 'LLM request',
-  response_parse: 'Response parsing',
-  latex_repair: 'LaTeX repair',
-};
-
-function StageMetrics() {
-  const [stages, setStages] = useState<StageMetric[]>([]);
-  const [unavailable, setUnavailable] = useState(false);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    async function refresh() {
-      try {
-        const response = await fetch(apiUrl('/api/metrics/stages'), { signal: controller.signal });
-        if (!response.ok) throw new Error('Metrics unavailable');
-        const data: { stages: StageMetric[] } = await response.json();
-        if (!controller.signal.aborted) {
-          setStages(data.stages);
-          setUnavailable(false);
-        }
-      } catch {
-        if (!controller.signal.aborted) setUnavailable(true);
-      }
-    }
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 2000);
-    return () => { controller.abort(); window.clearInterval(timer); };
+    const update = () => {
+      setRoute(parseRoute(window.location.hash));
+      window.scrollTo(0, 0);
+    };
+    window.addEventListener('hashchange', update);
+    return () => window.removeEventListener('hashchange', update);
   }, []);
+  return route;
+}
 
-  return (
-    <section className="stage-metrics" aria-labelledby="metrics-title">
-      <h2 id="metrics-title">Processing time</h2>
-      <p>Total seconds since the backend started, including failed attempts. Updates every 2 seconds.</p>
-      {unavailable && <p role="status">Metrics unavailable. Retrying… {stages.length > 0 && 'Showing the last readings.'}</p>}
-      {!stages.length && !unavailable && <p>Loading timings…</p>}
-      {stages.length > 0 && <div className="metrics-scroll"><table>
-        <thead><tr><th>Stage</th><th>Total seconds</th><th>Average seconds</th><th>Attempts</th><th>Errors</th></tr></thead>
-        <tbody>{stages.map((stage) => (
-          <tr key={stage.stage}>
-            <th scope="row">{stageNames[stage.stage] ?? stage.stage}</th>
-            <td>{stage.total_seconds.toFixed(6)} s</td>
-            <td>{stage.average_seconds === null ? '—' : `${stage.average_seconds.toFixed(6)} s`}</td>
-            <td>{stage.attempts}</td><td>{stage.errors}</td>
-          </tr>
-        ))}</tbody>
-      </table></div>}
-      <p>Only executed stages are counted. Transcription and browser rendering are outside these timings.</p>
-    </section>
-  );
+function go(hash: string) {
+  window.location.hash = hash;
 }
 
 export default function App() {
-  const [draft, setDraft] = useState('');
-  const [notes, setNotes] = useState<Note[]>([]);
-  const nextId = useRef(0);
+  const route = useRoute();
+  const [pages, setPages] = useState<Page[]>(loadPages);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const nextNoteId = useRef(
+    pages.reduce((max, page) => page.notes.reduce((m, note) => Math.max(m, note.id), max), 0),
+  );
 
-  async function addNote() {
-    const original = draft.trim();
-    if (!original) return;
+  useEffect(() => savePages(pages), [pages]);
 
-    const id = ++nextId.current;
-    setDraft('');
-    setNotes((previous) => [
-      ...previous,
-      { id, original, segments: null, status: 'loading' },
-    ]);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 1800);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
+  const current = route.name === 'page' ? pages.find((page) => page.id === route.id) ?? null : null;
+
+  useEffect(() => {
+    document.title = current ? `${current.title || 'Untitled lecture'} · LaTeX Lecture` : 'LaTeX Lecture';
+  }, [current]);
+
+  function updatePage(id: string, change: (page: Page) => Page) {
+    setPages((previous) => previous.map((page) => (page.id === id ? { ...change(page), updatedAt: Date.now() } : page)));
+  }
+
+  function updateNote(pageId: string, noteId: number, change: (note: Note) => Note) {
+    updatePage(pageId, (page) => ({ ...page, notes: page.notes.map((note) => (note.id === noteId ? change(note) : note)) }));
+  }
+
+  async function interpret(pageId: string, noteId: number, text: string) {
+    updateNote(pageId, noteId, (note) => ({ ...note, status: 'loading' }));
     try {
       const response = await fetch(apiUrl('/api/interpret'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: original }),
+        body: JSON.stringify({ text }),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       const result: { segments: Segment[] } = await response.json();
       if (!Array.isArray(result.segments)) throw new Error('Invalid AI response');
 
-      setNotes((previous) =>
-        previous.map((note) =>
-          note.id === id ? { ...note, status: 'ready', segments: result.segments } : note,
-        ),
-      );
+      updateNote(pageId, noteId, (note) => ({ ...note, status: 'ready', segments: result.segments }));
     } catch (error) {
       console.error('Interpretation failed:', error);
       // Keep the original transcription even if the API fails.
-      setNotes((previous) =>
-        previous.map((note) =>
-          note.id === id ? { ...note, status: 'error' } : note,
-        ),
-      );
+      updateNote(pageId, noteId, (note) => ({ ...note, status: 'error' }));
     }
   }
 
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    void addNote();
+  function newPage() {
+    const now = Date.now();
+    const page: Page = { id: newId(), title: '', notes: [], createdAt: now, updatedAt: now };
+    setPages((previous) => [...previous, page]);
+    go(`/page/${page.id}`);
   }
 
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
-      event.currentTarget.form?.requestSubmit();
+  function deletePage(page: Page) {
+    const name = page.title || 'Untitled lecture';
+    if (!window.confirm(`Delete “${name}” and its ${page.notes.length} notes? This can’t be undone.`)) return;
+    setPages((previous) => previous.filter((p) => p.id !== page.id));
+    if (route.name === 'page' && route.id === page.id) go('/home');
+  }
+
+  function addNote(pageId: string, text: string) {
+    const id = ++nextNoteId.current;
+    updatePage(pageId, (page) => ({
+      ...page,
+      notes: [...page.notes, { id, original: text, segments: null, status: 'loading' }],
+    }));
+    void interpret(pageId, id, text);
+  }
+
+  async function copy(note: Note) {
+    try {
+      await navigator.clipboard.writeText(noteToLatex(note));
+      setToast('Copied to clipboard');
+    } catch {
+      setToast('Could not copy');
     }
+  }
+
+  if (route.name === 'landing') {
+    return <Landing hasPages={pages.length > 0} onStart={() => (pages.length > 0 ? go('/home') : newPage())} />;
   }
 
   return (
-    <main className="page">
-      <header className="header">
-        <span className="eyebrow">VOICE-FIRST MATHEMATICS</span>
-        <h1>Wispr Lecture <span className="prototype">Prototype</span></h1>
-        <p>Speak naturally. Keep the meaning. Choose when notation is ambiguous.</p>
-      </header>
+    <div className="app">
+      <Sidebar
+        pages={pages}
+        currentId={current?.id ?? null}
+        onHome={route.name === 'home'}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        onNewPage={newPage}
+        onDeletePage={deletePage}
+      />
 
-      <section className="notebook" aria-label="Lecture notes">
-        <div className="notebook-heading">
-          <h2>Lecture notes</h2>
-          <span>{notes.length} {notes.length === 1 ? 'note' : 'notes'}</span>
-        </div>
-        {notes.length === 0 ? (
-          <p className="empty">Your notes will appear here. Try an integral, limit, or proof statement.</p>
-        ) : (
-          <ol className="notes" aria-live="polite">
-            {notes.map((note) => (
-              <li key={note.id} className="note">
-                <div className="note-body"><NoteContent note={note} /></div>
-                {note.status === 'loading' && <p className="note-meta">Interpreting…</p>}
-                {note.status === 'error' && (
-                  <p className="note-meta warning">AI unavailable — original text kept.</p>
-                )}
-              </li>
-            ))}
-          </ol>
+      <div className="main">
+        <header className="topbar">
+          <button type="button" className="sidebar-toggle" aria-label="Open sidebar" onClick={() => setSidebarOpen(true)}>
+            ☰
+          </button>
+          <span className="breadcrumb">
+            <a href="#/home">Home</a>
+            {route.name === 'page' && (
+              <>
+                <span className="breadcrumb-sep">/</span>
+                <span className="breadcrumb-current">{current ? current.title || 'Untitled lecture' : 'Not found'}</span>
+              </>
+            )}
+          </span>
+          {current && (
+            <span className="topbar-meta">
+              {current.notes.length} {current.notes.length === 1 ? 'note' : 'notes'}
+            </span>
+          )}
+        </header>
+
+        {route.name === 'home' && <Home pages={pages} onNewPage={newPage} onDeletePage={deletePage} />}
+
+        {route.name === 'page' && current && (
+          <PageView
+            key={current.id}
+            page={current}
+            onRename={(title) => updatePage(current.id, (page) => ({ ...page, title }))}
+            onAddNote={(text) => addNote(current.id, text)}
+            onChoose={(noteId, index, latex) =>
+              updateNote(current.id, noteId, (note) => ({
+                ...note,
+                segments: note.segments?.map((segment, i) => (i === index ? { ...segment, chosen: latex } : segment)) ?? null,
+              }))
+            }
+            onCopy={(note) => void copy(note)}
+            onRetry={(note) => void interpret(current.id, note.id, note.original)}
+            onDeleteNote={(noteId) =>
+              updatePage(current.id, (page) => ({ ...page, notes: page.notes.filter((note) => note.id !== noteId) }))
+            }
+          />
         )}
-      </section>
 
-      <form className="composer" onSubmit={submit}>
-        <label htmlFor="dictation">Dictate or type a note</label>
-        <textarea
-          id="dictation"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="e.g. for all epsilon greater than zero there exists delta greater than zero"
-          rows={3}
-          maxLength={2000}
-        />
-        <div className="composer-bottom">
-          <span>Enter to add · Shift+Enter for a new line</span>
-          <button type="submit" className="submit" disabled={!draft.trim()}>Add note</button>
-        </div>
-      </form>
+        {route.name === 'page' && !current && (
+          <div className="page">
+            <h1 className="page-title-static">This page doesn’t exist</h1>
+            <p className="empty">It may have been deleted. <a href="#/home">Go to Home</a></p>
+          </div>
+        )}
 
-      <StageMetrics />
+        <footer className="app-footer">Independent feature prototype · Not affiliated with Wispr</footer>
+      </div>
 
-      <footer>Independent feature prototype · Not affiliated with Wispr</footer>
-    </main>
+      {toast && <div className="toast" role="status">{toast}</div>}
+    </div>
   );
 }

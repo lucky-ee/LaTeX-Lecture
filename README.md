@@ -1,8 +1,8 @@
-# Wispr Lecture
+# LaTeX Lecture
 
 **Voice-first mathematical note-taking for university lectures.**
 
-Wispr Lecture turns dictated mathematical language into readable, KaTeX-rendered notation. It accepts text transcribed by a tool such as [Wispr Flow](https://wisprflow.ai/), identifies mathematical expressions, and presents alternative interpretations when the wording is ambiguous.
+LaTeX Lecture turns dictated mathematical language into readable, KaTeX-rendered notation. It accepts text transcribed by a tool such as [Wispr Flow](https://wisprflow.ai/), identifies mathematical expressions, and presents alternative interpretations when the wording is ambiguous.
 
 For example:
 
@@ -313,7 +313,7 @@ wispr-lecture/
 
 ## Deployment and Security
 
-Wispr Lecture is currently an actively developed prototype. The following capabilities are required or recommended before exposing the application to public production traffic.
+LaTeX Lecture is currently an actively developed prototype. The following capabilities are required or recommended before exposing the application to public production traffic.
 
 ### Access Control and Abuse Prevention
 
