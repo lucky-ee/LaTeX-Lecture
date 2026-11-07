@@ -74,7 +74,7 @@ def _request_body(settings: Settings, text: str) -> dict:
                 "schema": Interpretation.model_json_schema(),
             },
         },
-        "provider": {"require_parameters": True},
+        "provider": {"require_parameters": True, "sort": "latency"},
     }
 
 
