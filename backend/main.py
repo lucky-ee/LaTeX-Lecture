@@ -12,6 +12,7 @@ from metrics import RATE_LIMITED, stage_snapshot, time_stage
 from prometheus_fastapi_instrumentator import Instrumentator
 from rate_limit import RateLimiter
 from schemas import Interpretation, NoteRequest, Segment
+from segments import remove_repeated_math
 from settings import load_settings
 
 logger = logging.getLogger(__name__)
@@ -108,4 +109,5 @@ async def interpret(request: NoteRequest):
             return Interpretation(segments=[Segment(kind="text", content=text, readings=[])])
         for segment in result.segments:
             segment.readings = [repair_latex(reading) for reading in segment.readings]
+        result.segments = remove_repeated_math(result.segments)
         return result
