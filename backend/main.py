@@ -60,7 +60,7 @@ async def require_metrics_token(authorization: str | None = Header(default=None)
         raise HTTPException(status_code=401, detail="Unauthorized.", headers={"WWW-Authenticate": "Bearer"})
 
 
-app = FastAPI(title="Wispr Lecture API", lifespan=lifespan)
+app = FastAPI(title="LaTeX Lecture API", lifespan=lifespan)
 if settings.cors_origins:
     app.add_middleware(
         CORSMiddleware,

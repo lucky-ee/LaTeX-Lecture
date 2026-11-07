@@ -31,7 +31,7 @@ export default function Sidebar({ pages, currentId, onHome, open, onClose, onNew
       <nav className={`sidebar${open ? ' open' : ''}`} aria-label="Pages">
         <a className="sidebar-workspace" href="#/" onClick={onClose}>
           <span className="workspace-badge" aria-hidden="true">W</span>
-          Wispr Lecture
+          LaTeX Lecture
         </a>
         <a className={`sidebar-item${onHome ? ' active' : ''}`} href="#/home" onClick={onClose}>
           <HomeIcon /> Home

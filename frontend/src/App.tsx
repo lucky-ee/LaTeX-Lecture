@@ -57,7 +57,7 @@ export default function App() {
   const current = route.name === 'page' ? pages.find((page) => page.id === route.id) ?? null : null;
 
   useEffect(() => {
-    document.title = current ? `${current.title || 'Untitled lecture'} · Wispr Lecture` : 'Wispr Lecture';
+    document.title = current ? `${current.title || 'Untitled lecture'} · LaTeX Lecture` : 'LaTeX Lecture';
   }, [current]);
 
   function updatePage(id: string, change: (page: Page) => Page) {

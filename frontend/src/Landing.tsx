@@ -15,7 +15,7 @@ const examples = [
 const features = [
   {
     title: 'Speak naturally',
-    body: 'Dictate the way your professor talks. Wispr Lecture takes the transcription from Wispr Flow, or anything you type, and turns the math into notation.',
+    body: 'Dictate the way your professor talks. LaTeX Lecture takes the transcription from Wispr Flow, or anything you type, and turns the math into notation.',
   },
   {
     title: 'You decide when it’s ambiguous',
@@ -35,7 +35,7 @@ export default function Landing({ hasPages, onStart }: { hasPages: boolean; onSt
   return (
     <div className="landing">
       <nav className="landing-nav">
-        <span className="landing-logo">Wispr Lecture</span>
+        <span className="landing-logo">LaTeX Lecture</span>
         <a className="landing-nav-link" href="#/home">Open app</a>
       </nav>
 
